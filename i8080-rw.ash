@@ -14,8 +14,6 @@ fi
 
 set -e
 
-export LANG=C
-unset LC_ALL LC_CTYPE LC_NUMERIC LC_TIME LC_NAME
 MEMORY_FILE="$1"
 #exec 6<> "$1"
 DISK0_FILE=A
@@ -61,11 +59,41 @@ get_flag() {
 	eval "P=\${$((i+1))}"
 }
 
+if [ "`printf '' | hexdump -v -e '/1 \"%02x\"' 2> /dev/null`" = 03 ]; then
+	read_memory() {
+		trap "" INT
+		hexdump -v -e '/1 "%u"' -s $1 -n 1 "$MEMORY_FILE"
+		trap sigint_handler INT
+	}
+	byte_to_dec() {
+		hexdump -v -e '/1 "%u"'
+	}
+else
+	read_memory_image_in_hex() {
+		xxd -c 256 -g 1 -l 65537 "$1" | sed -E -e "s/^[0-9a-f]+: //" -e "s/  .+//"
+	}
+	read_memory() {
+		trap "" INT
+		local hex="`xxd -g 1 -s $1 -l 1 \"$MEMORY_FILE\"`"
+		trap sigint_handler INT
+		hex="${hex#*: }"
+		hex="${hex%% *}"
+		echo $((0x$hex))
+	}
+	byte_to_dec() {
+		local hex
+		hex="`xxd -g 1 -l 1`" && [ -n "$hex" ] || return
+		hex="${hex#*: }"
+		hex="${hex%% *}"
+		echo $((0x$hex))
+	}
+fi
+
 read_key() {
-	# Must use dd(1) to limit read size to 1 byte, otherwise hexdump(1)
-	# will read ahead of the size specified by '-n', potentially causing
-	# key strikes to loss
-	key="`dd bs=1 count=1 2> /dev/null | hexdump -v -e '/1 \"%u\"'`" || return
+	# Must use dd(1) to limit read size to 1 byte, otherwise hexdump(1) or
+	# xxd(1) will read ahead of the size specified by '-n', potentially
+	# causing key strikes to loss
+	key="`dd bs=1 count=1 2> /dev/null | byte_to_dec`" || return
 	case "$key" in
 		"")
 			false
@@ -75,23 +103,6 @@ read_key() {
 			;;
 	esac
 }
-
-if true; then
-	read_memory() {
-		trap "" INT
-		hexdump -v -e '/1 "%u"' -s $1 -n 1 "$MEMORY_FILE"
-		trap sigint_handler INT
-	}
-else
-	read_memory() {
-		trap "" INT
-		local hex="`xxd -g 1 -s $1 -l 1 \"$MEMORY_FILE\"`"
-		trap sigint_handler INT
-		hex="${hex#*: }"
-		hex="${hex%% *}"
-		echo $((0x$hex))
-	}
-fi
 
 write_memory() {
 	local oct="`printf %03o \"$2\"`"

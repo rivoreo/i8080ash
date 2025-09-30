@@ -57,11 +57,37 @@ get_flag() {
 	eval "P=\${$((i+1))}"
 }
 
+if [ "`printf '' | hexdump -v -e '/1 \"%02x\"' 2> /dev/null`" = 03 ]; then
+	read_memory_image_in_hex() {
+		hexdump -v -e '/1 " %02x"' -n 65537 "$1"
+	}
+	read_disk_block_in_hex() {
+		hexdump -v -e '/1 " %02x"' -s $(($2*128)) -n 128 "$1"
+	}
+	byte_to_dec() {
+		hexdump -v -e '/1 "%u"'
+	}
+else
+	read_memory_image_in_hex() {
+		xxd -c 256 -g 1 -l 65537 "$1" | sed -E -e "s/^[0-9a-f]+: //" -e "s/  .+//"
+	}
+	read_disk_block_in_hex() {
+		xxd -c 128 -g 1 -s $(($2*128)) -l 128 "$1" | sed -E -e 's/^[0-9a-f]+: //' -e 's/  .+//'
+	}
+	byte_to_dec() {
+		local hex
+		hex="`xxd -g 1 -l 1`" && [ -n "$hex" ] || return
+		hex="${hex#*: }"
+		hex="${hex%% *}"
+		echo $((0x$hex))
+	}
+fi
+
 read_key() {
-	# Must use dd(1) to limit read size to 1 byte, otherwise hexdump(1)
-	# will read ahead of the size specified by '-n', potentially causing
-	# key strikes to loss
-	key="`dd bs=1 count=1 2> /dev/null | hexdump -v -e '/1 \"%u\"'`" || return
+	# Must use dd(1) to limit read size to 1 byte, otherwise hexdump(1) or
+	# xxd(1) will read ahead of the size specified by '-n', potentially
+	# causing key strikes to loss
+	key="`dd bs=1 count=1 2> /dev/null | byte_to_dec`" || return
 	case "$key" in
 		"")
 			false
@@ -71,16 +97,6 @@ read_key() {
 			;;
 	esac
 }
-
-if true; then
-	read_disk_block_in_hex() {
-		hexdump -v -e '/1 " %02x"' -s $(($2*128)) -n 128 "$1"
-	}
-else
-	read_disk_block_in_hex() {
-		xxd -c 128 -g 1 -s $(($2*128)) -l 128 "$1" | sed -E -e 's/^[0-9a-f]+: //' -e 's/  .+//'
-	}
-fi
 
 read_disk() {
 	local f b
@@ -204,9 +220,8 @@ EOT
 echo "i8080 emulator for Almquist shell"
 echo "Copyright 2021-2025 Rivoreo"
 
-#bytes="`xxd -c 256 -g 1 -l 65537 \"$1\" | sed -E -e 's/^[0-9a-f]+: //' -e 's/  .+//'`"
-#[ -n "$bytes" ]
-bytes="`hexdump -v -e '/1 \" %02x\"' -n 65537 \"$1\"`"
+bytes="`read_memory_image_in_hex \"$1\"`"
+[ -n "$bytes" ]
 i=0
 for b in $bytes; do
 	if [ $i -gt 65535 ]; then

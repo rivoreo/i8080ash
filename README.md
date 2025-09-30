@@ -25,7 +25,8 @@ dash versions 0.5.7 and later, and busybox ash are known to have suboptimal perf
 In addition to a supported shell, some other basic external commands are required by the emulator:
 
 * **dd(1)**
-* **hexdump(1)**
+* **hexdump(1)** or **xxd(1)**
+* **sed(1)**, if **xxd(1)** is being used
 * **grep(1)**
 * **perl(1)**
 * **stty(1)**, if using from a terminal (the usual case)
