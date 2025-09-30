@@ -114,7 +114,9 @@ read_key() {
 	# Must use dd(1) to limit read size to 1 byte, otherwise hexdump(1) or
 	# xxd(1) will read ahead of the size specified by '-n' or '-l',
 	# potentially causing key strikes to loss
-	key="`dd bs=1 count=1 2> /dev/null | byte_to_dec`" || return
+	local extended_dd_operands=
+	[ -n "$I8080ASH_USE_DD_IFLAG_NONBLOCK" ] && extended_dd_operands=iflag=nonblock
+	key="`dd bs=1 count=1 $extended_dd_operands 2> /dev/null | byte_to_dec`" || return
 	case "$key" in
 		"")
 			false
