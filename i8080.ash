@@ -430,6 +430,7 @@ while true; do
 			;;
 
 		118) # HLT
+			[ -n "$PRINT_REGISTERS_ON_HALT" ] && print_registers --hex
 			break
 			;;
 
