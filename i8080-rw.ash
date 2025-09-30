@@ -12,12 +12,17 @@ if [ $# != 1 ]; then
 	exit 255
 fi
 
-set -e
-
 MEMORY_FILE="$1"
-#exec 6<> "$1"
 DISK0_FILE=A
 DISK1_FILE=B
+
+[ -n "$I8080ASH_PRINT_REGISTERS_ON_HALT" ] && PRINT_REGISTERS_ON_HALT=1
+[ -z "$BASH" ] && [ -n "$I8080ASH_ASSUME_BASH" ] && BASH=assumed
+if [ -n "$I8080ASH_USE_BASH_READ" ] && [ -z "$BASH" ]; then
+	echo "Warning: I8080ASH_USE_BASH_READ is set, but current shell is not bash" 1>&2
+fi
+
+set -e
 
 stdin_status_flags=
 
@@ -58,11 +63,6 @@ get_flag() {
 		0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84
 	eval "P=\${$((i+1))}"
 }
-
-[ -z "$BASH" ] && [ -n "$I8080ASH_ASSUME_BASH" ] && BASH=assumed
-if [ -n "$I8080ASH_USE_BASH_READ" ] && [ -z "$BASH" ]; then
-	echo "Warning: I8080ASH_USE_BASH_READ is set, but current shell is not bash" 1>&2
-fi
 
 if [ "`printf '' | hexdump -v -e '/1 \"%02x\"' 2> /dev/null`" = 03 ]; then
 	read_memory() {
