@@ -48,6 +48,33 @@ If environment variables `A`, `B`, `C`, `D`, `E`, `H`, `L`, `SP`, `PC` and `FLAG
 
 When running the emulator, pressing Ctrl-C will giving a menu for different actions. If you choose to dump registers and terminate emulation, you will be able to restore this emulation state by setting the register values in environment variables, as described above.
 
+### Configuration environment variables
+
+In addition to the environment variables for restoring a emulation state, the emulator also recognize some environment variables that configure how it interact with the host operating system.
+
+#### I8080ASH_USE_BASH_READ
+
+If you run the emulator with GNU bash, set this to a non-empty string to make it using the built **read** command with some bash-specific options, rather than **dd(1)**, to read the input key. This can make the emulator to work on a system without **perl(1)**.
+
+Obviously this is only useful with bash, otherwise it is ignored.
+
+#### I8080ASH_ASSUME_BASH
+
+Normally the emulator avoid uses of any bash-specific feature if the underlying shell is not bash. However if you believe your shell supports the bash-specific features that would be used by the emulator, you may set this environment to a non-empty string, to make the emulator to assume that it is bash.
+
+Currently only meaningful when used together with `I8080ASH_USE_BASH_READ`.
+
+#### I8080ASH_USE_DD_IFLAG_NONBLOCK
+
+Set this to a non-empty string to make the emulator passing `iflag=nonblock` for the **dd(1)** command line that used to read the input key, in attempt to make this read operation non-blocking.
+
+This **dd(1)** operand is a non-standard extension of GNU dd; its use is normally not recommended because it may leave your terminal in non-blocking state after exiting of the emulator.
+
+#### I8080ASH_PRINT_REGISTERS_ON_HALT
+
+Set this to a non-empty string to make the emulator printing register values to stderr on execution of HLT instruction, before exiting.
+
+
 ### Examples
 
 ```sh
