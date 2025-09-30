@@ -57,6 +57,11 @@ get_flag() {
 	eval "P=\${$((i+1))}"
 }
 
+[ -z "$BASH" ] && [ -n "$I8080ASH_ASSUME_BASH" ] && BASH=assumed
+if [ -n "$I8080ASH_USE_BASH_READ" ] && [ -z "$BASH" ]; then
+	echo "Warning: I8080ASH_USE_BASH_READ is set, but current shell is not bash" 1>&2
+fi
+
 if [ "`printf '' | hexdump -v -e '/1 \"%02x\"' 2> /dev/null`" = 03 ]; then
 	read_memory_image_in_hex() {
 		hexdump -v -e '/1 " %02x"' -n 65537 "$1"
@@ -84,9 +89,25 @@ else
 fi
 
 read_key() {
+	if [ -n "$I8080ASH_USE_BASH_READ" ] && [ -n "$BASH" ]; then
+		local timeout variable
+		if [ "$1" = --check ]; then
+			timeout=0
+			variable=variable
+		else
+			timeout=0.5
+			variable=key
+		fi
+		IFS= read -d "" -r -s -n 1 -t $timeout $variable || return
+		if [ "$1" != --check ]; then
+			[ "$key" = "
+" ] && key=13 || key=`printf %u "'$key"`
+		fi
+		return
+	fi
 	# Must use dd(1) to limit read size to 1 byte, otherwise hexdump(1) or
-	# xxd(1) will read ahead of the size specified by '-n', potentially
-	# causing key strikes to loss
+	# xxd(1) will read ahead of the size specified by '-n' or '-l',
+	# potentially causing key strikes to loss
 	key="`dd bs=1 count=1 2> /dev/null | byte_to_dec`" || return
 	case "$key" in
 		"")
@@ -187,9 +208,13 @@ Ctrl-C pressed, select an action:
  4. Terminate emulator.
 EOT
 	while true; do
-		printf "> " 1>&2
-		#answer="`dd bs=1 count=1 2> /dev/null`" || exit
-		answer="`perl -e 'my \$b; my \$s = sysread STDIN, \$b, 1; exit 1 if \$s < 1; print STDOUT \$b;'`" || exit
+		if [ -n "$I8080ASH_USE_BASH_READ" ] && [ -n "$BASH" ]; then
+			read -n 1 -p "> " answer
+		else
+			printf "> " 1>&2
+			#answer="`dd bs=1 count=1 2> /dev/null`" || exit
+			answer="`perl -e 'my \$b; my \$s = sysread STDIN, \$b, 1; exit 1 if \$s < 1; print STDOUT \$b;'`"
+		fi || exit
 		printf %s\\n "$answer" 1>&2
 		case "$answer" in
 			1)
@@ -214,7 +239,7 @@ EOT
 				;;
 		esac
 	done
-	set_stdin_nonblock
+	[ -z "$BASH" ] || [ -z "$I8080ASH_USE_BASH_READ" ] && set_stdin_nonblock
 }
 
 echo "i8080 emulator for Almquist shell"
@@ -251,7 +276,7 @@ key=
 set +e
 
 echo
-if ! set_stdin_nonblock; then
+if { [ -z "$BASH" ] || [ -z "$I8080ASH_USE_BASH_READ" ]; } && ! set_stdin_nonblock; then
 	echo "Failed to make stdin non-blocking" 1>&2
 	exit 1
 fi
@@ -1413,8 +1438,7 @@ while true; do
 		251) # EI
 			;;
 
-		211)
-			# OUT nn
+		211) # OUT nn
 			eval "port=\$M_$PC"
 			case $port in
 				0|2)
@@ -1423,37 +1447,17 @@ while true; do
 			esac
 			PC=$((PC+1))
 			;;
-		219)
-			# IN nn
-			eval "_temp=\$M_$PC"
-			case $_temp in
+		219) # IN nn
+			eval "port=\$M_$PC"
+			case $port in
 				0)
-					if [ -n "$key" ] || read_key; then
+					if [ -n "$key" ] || read_key --check; then
 						A=255
 					else
 						A=0
 					fi
 					;;
 				1)
-					# In the previous bash-based version,
-					# the read command in bash has a bug
-					# that it will interfere with SIGINT
-					# handling setting. The following
-					# workaround is necessary if read_key
-					# is implemented using the
-					# bash-specific read command to read
-					# the input key.
-					#if [ -z "$key" ]; then
-					#	# Workaround a bash(1) bug
-					#	got_sigint=
-					#	trap got_sigint=1 INT
-					#	if ! read_key; then
-					#		[ -n "$got_sigint" ] && sigint_handler
-					#		A=0
-					#		key=
-					#	fi
-					#	trap sigint_handler INT
-					#fi
 					if [ -n "$key" ] || read_key; then
 						A=$key
 						key=
@@ -1462,7 +1466,6 @@ while true; do
 					fi
 					;;
 				2)
-					echo "Not implemented" 1>&2
 					A=0
 					;;
 			esac
