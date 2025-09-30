@@ -1,0 +1,1504 @@
+#!/bin/sh
+
+# Copyright 2021-2025 Rivoreo
+
+# This Source Code Form is subject to the terms of the Mozilla Public License,
+# v. 2.0. If a copy of the MPL was not distributed with this file, You can
+# obtain one at https://mozilla.org/MPL/2.0/.
+
+
+if [ $# != 1 ]; then
+	printf "Usage: %s <program>\\n" "$0"
+	exit 255
+fi
+
+set -e
+
+DISK0_FILE=A
+DISK1_FILE=B
+
+stdin_status_flags=
+
+set_stdin_nonblock() {
+	if [ -z "$stdin_status_flags" ]; then
+		stdin_status_flags="`perl -e 'use strict; use POSIX; print STDOUT fcntl(STDIN, F_GETFL, 0);'`" || return
+		stdin_status_flags="${stdin_status_flags%% *}"
+		printf %s\\n "$stdin_status_flags" | grep -Eq '^[0-9]+$' || return
+	fi
+	perl -e "use strict; use POSIX; fcntl(STDIN, F_SETFL, $stdin_status_flags | O_NONBLOCK);"
+}
+
+restore_stdin_status_flags() {
+	[ -z "$stdin_status_flags" ] && return
+	perl -e "use strict; use POSIX; fcntl(STDIN, F_SETFL, $stdin_status_flags);"
+}
+
+# Lookup table for flag values
+# Will update external variable 'P'
+get_flag() {
+	local i=$1
+	set -- \
+		0x44 0x00 0x00 0x04 0x00 0x04 0x04 0x00 0x00 0x04 0x04 0x00 0x04 0x00 0x00 0x04 \
+		0x00 0x04 0x04 0x00 0x04 0x00 0x00 0x04 0x04 0x00 0x00 0x04 0x00 0x04 0x04 0x00 \
+		0x00 0x04 0x04 0x00 0x04 0x00 0x00 0x04 0x04 0x00 0x00 0x04 0x00 0x04 0x04 0x00 \
+		0x04 0x00 0x00 0x04 0x00 0x04 0x04 0x00 0x00 0x04 0x04 0x00 0x04 0x00 0x00 0x04 \
+		0x00 0x04 0x04 0x00 0x04 0x00 0x00 0x04 0x04 0x00 0x00 0x04 0x00 0x04 0x04 0x00 \
+		0x04 0x00 0x00 0x04 0x00 0x04 0x04 0x00 0x00 0x04 0x04 0x00 0x04 0x00 0x00 0x04 \
+		0x04 0x00 0x00 0x04 0x00 0x04 0x04 0x00 0x00 0x04 0x04 0x00 0x04 0x00 0x00 0x04 \
+		0x00 0x04 0x04 0x00 0x04 0x00 0x00 0x04 0x04 0x00 0x00 0x04 0x00 0x04 0x04 0x00 \
+		0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84 0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 \
+		0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84 \
+		0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84 \
+		0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84 0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 \
+		0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84 \
+		0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84 0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 \
+		0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84 0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 \
+		0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84
+	eval "P=\${$((i+1))}"
+}
+
+read_key() {
+	# Must use dd(1) to limit read size to 1 byte, otherwise hexdump(1)
+	# will read ahead of the size specified by '-n', potentially causing
+	# key strikes to loss
+	key="`dd bs=1 count=1 2> /dev/null | hexdump -v -e '/1 \"%u\"'`" || return
+	case "$key" in
+		"")
+			false
+			;;
+		10)
+			key=13
+			;;
+	esac
+}
+
+if true; then
+	read_disk_block_in_hex() {
+		hexdump -v -e '/1 " %02x"' -s $(($2*128)) -n 128 "$1"
+	}
+else
+	read_disk_block_in_hex() {
+		xxd -c 128 -g 1 -s $(($2*128)) -l 128 "$1" | sed -E -e 's/^[0-9a-f]+: //' -e 's/  .+//'
+	}
+fi
+
+read_disk() {
+	local f b
+	case $1 in
+		0) f="$DISK0_FILE" ;;
+		1) f="$DISK1_FILE" ;;
+		*) return 1 ;;
+	esac
+	[ -n "$f" ] || return
+	[ -f "$f" ] || return
+	local i=$2
+	trap "" INT
+	for b in `read_disk_block_in_hex "$f" $3`; do
+		eval "M_$i=$((0x$b))"
+		i=$((i+1))
+		[ $i -gt 65535 ] && break
+	done
+	trap sigint_handler INT
+}
+
+write_disk() {
+	local f b
+	case $1 in
+		0) f="$DISK0_FILE" ;;
+		1) f="$DISK1_FILE" ;;
+		*) return 1 ;;
+	esac
+	[ -n "$f" ] || return
+	local i=$2
+	local end=$((i+128))
+	[ $end -gt 65535 ] && end=65535
+	trap "" INT
+	while [ $i -lt $end ]; do
+		eval "b=\$M_$i"
+		printf "\\`printf %03o $b`"
+		i=$((i+1))
+	done | dd ibs=1 "of=$f" obs=128 seek=$3 count=128 conv=notrunc > /dev/null 2>&1
+	trap sigint_handler INT
+}
+
+print_registers() {
+	local format
+	if [ "$1" = --hex ]; then
+		format="A=0x%02x B=0x%02x C=0x%02x D=0x%02x E=0x%02x H=0x%02x L=0x%02x SP=0x%04x PC=0x%04x FLAGS=0x%02x\\n"
+	else
+		format="A=%s B=%s C=%s D=%s E=%s H=%s L=%s SP=%s PC=%s FLAGS=%s\\n"
+	fi
+	printf "$format" $A $B $C $D $E $H $L $SP $PC $FLAGS 1>&2
+}
+
+dump_memory() {
+	local f b i=0
+	[ -t 0 ] && stty icanon echo && trap - EXIT
+	set -e
+	if [ -n "$1" ]
+	then f="$1"
+	else while true; do
+		if ! read -p "File name? " f || [ -z "$f" ]; then
+			echo "Dump aborted" 1>&2
+			#exit 1
+			return 1
+		fi
+		# Allow dumping to devices, named pipes, etc.
+		if [ -d "$f" ] || [ -f "$f" ]; then
+			printf "File '%s' already exists, please use another name\\n" "$f" 1>&2
+		else
+			break
+		fi
+	done fi
+	printf "Dumping to '%s'...   0%%" "$f" 1>&2
+	while [ $i -lt 65536 ]; do
+		eval "b=\$M_$i"
+		printf "\\`printf %03o $b`"
+		i=$((i+1))
+		[ $((i&0xff)) = 0 ] && printf '\b\b\b\b%3u%%' $((i*100/65536)) 1>&2
+	done > "$f"
+	echo 1>&2
+}
+
+sigint_handler() {
+	local answer
+	restore_stdin_status_flags
+	cat 1>&2 << EOT
+Ctrl-C pressed, select an action:
+ 1. Pass ^C into emulator as keyboard input.
+ 2. Print register values.
+ 3. Print register values, dump memory into a file and terminate emulator.
+ 4. Terminate emulator.
+EOT
+	while true; do
+		printf "> " 1>&2
+		#answer="`dd bs=1 count=1 2> /dev/null`" || exit
+		answer="`perl -e 'my \$b; my \$s = sysread STDIN, \$b, 1; exit 1 if \$s < 1; print STDOUT \$b;'`" || exit
+		printf %s\\n "$answer" 1>&2
+		case "$answer" in
+			1)
+				key=3
+				break
+				;;
+			2)
+				print_registers --hex
+				break
+				;;
+			3)
+				trap - INT
+				print_registers
+				dump_memory
+				exit 0
+				;;
+			4)
+				exit 0
+				;;
+			*)
+				echo "Invalid answer, please try again" 1>&2
+				;;
+		esac
+	done
+	set_stdin_nonblock
+}
+
+echo "i8080 emulator for Almquist shell"
+echo "Copyright 2021-2025 Rivoreo"
+
+#bytes="`xxd -c 256 -g 1 -l 65537 \"$1\" | sed -E -e 's/^[0-9a-f]+: //' -e 's/  .+//'`"
+#[ -n "$bytes" ]
+bytes="`hexdump -v -e '/1 \" %02x\"' -n 65537 \"$1\"`"
+i=0
+for b in $bytes; do
+	if [ $i -gt 65535 ]; then
+		printf "Warning: Only first 64 KiB of '%s' is loaded\\n" "$1" 1>&2
+		break
+	fi
+	eval "M_$i=$((0x$b))"
+	i=$((i+1))
+done
+printf 'Loaded %s bytes\n' $i
+while [ $i -lt 65536 ]; do
+	eval "M_$i=0"
+	i=$((i+1))
+done
+unset i b
+
+for register in A B C D E H L SP PC FLAGS; do
+	eval "v=\"\$$register\""
+	[ -n "$v" ] && v=$((v)) && [ "$v" -ge 0 ] && [ "$v" -lt $((${#register}>1?65536:256)) ] || v=0
+	eval "$register=\$v"
+done
+unset register v
+
+# Pending input key
+key=
+
+set +e
+
+echo
+if ! set_stdin_nonblock; then
+	echo "Failed to make stdin non-blocking" 1>&2
+	exit 1
+fi
+if [ -t 0 ]; then
+	trap "restore_stdin_status_flags; stty icanon echo" EXIT
+	stty -icanon -echo
+else
+	trap restore_stdin_status_flags EXIT
+fi
+trap "print_registers; dump_memory memory-dump; exit" HUP
+trap sigint_handler INT
+
+do_ret() {
+	local low_pc high_pc
+	eval "low_pc=\$M_$SP"
+	SP=$(((SP+1)&65535))
+	eval "high_pc=\$M_$SP"
+	SP=$((SP+1))
+	PC=$((low_pc|(high_pc<<8)))
+}
+
+while true; do
+	eval "opcode=\$M_$PC"
+	PC=$((PC+1))
+	case $opcode in
+		0) # NOP
+			;;
+
+		64) # MOV B,B
+			;;
+		65) # MOV B,C
+			B=$C
+			;;
+		66) # MOV B,D
+			B=$D
+			;;
+		67) # MOV B,E
+			B=$E
+			;;
+		68) # MOV B,H
+			B=$H
+			;;
+		69) # MOV B,L
+			B=$L
+			;;
+		70) # MOV B,M
+			eval "B=\$M_$((H<<8|L))"
+			;;
+		71) # MOV B,A
+			B=$A
+			;;
+
+		72) # MOV C,B
+			C=$B
+			;;
+		73) # MOV C,C
+			;;
+		74) # MOV C,D
+			C=$D
+			;;
+		75) # MOV C,E
+			C=$E
+			;;
+		76) # MOV C,H
+			C=$H
+			;;
+		77) # MOV C,L
+			C=$L
+			;;
+		78) # MOV C,M
+			eval "C=\$M_$((H<<8|L))"
+			;;
+		79) # MOV C,A
+			C=$A
+			;;
+
+		80) # MOV D,B
+			D=$B
+			;;
+		81) # MOV D,C
+			D=$C
+			;;
+		82) # MOV D,D
+			D=$D
+			;;
+		83) # MOV D,E
+			D=$E
+			;;
+		84) # MOV D,H
+			D=$H
+			;;
+		85) # MOV D,L
+			D=$L
+			;;
+		86) # MOV D,M
+			eval "D=\$M_$((H<<8|L))"
+			;;
+		87) # MOV D,A
+			D=$A
+			;;
+
+		88) # MOV E,B
+			E=$B
+			;;
+		89) # MOV E,C
+			E=$C
+			;;
+		90) # MOV E,D
+			E=$D
+			;;
+		91) # MOV E,E
+			;;
+		92) # MOV E,H
+			E=$H
+			;;
+		93) # MOV E,L
+			E=$L
+			;;
+		94) # MOV E,M
+			eval "E=\$M_$((H<<8|L))"
+			;;
+		95) # MOV E,A
+			E=$A
+			;;
+
+		96) # MOV H,B
+			H=$B
+			;;
+		97) # MOV H,C
+			H=$C
+			;;
+		98) # MOV H,D
+			H=$D
+			;;
+		99) # MOV H,E
+			H=$E
+			;;
+		100) # MOV H,H
+			;;
+		101) # MOV H,L
+			H=$L
+			;;
+		102) # MOV H,M
+			eval "H=\$M_$((H<<8|L))"
+			;;
+		103) # MOV H,A
+			H=$A
+			;;
+
+		104) # MOV L,B
+			L=$B
+			;;
+		105) # MOV L,C
+			L=$C
+			;;
+		106) # MOV L,D
+			L=$D
+			;;
+		107) # MOV L,E
+			L=$E
+			;;
+		108) # MOV L,H
+			L=$H
+			;;
+		109) # MOV L,L
+			;;
+		110) # MOV L,M
+			eval "L=\$M_$((H<<8|L))"
+			;;
+		111) # MOV L,A
+			L=$A
+			;;
+
+		112) # MOV M,B
+			eval "M_$((H<<8|L))=\$B"
+			;;
+		113) # MOV M,C
+			eval "M_$((H<<8|L))=\$C"
+			;;
+		114) # MOV M,D
+			eval "M_$((H<<8|L))=\$D"
+			;;
+		115) # MOV M,E
+			eval "M_$((H<<8|L))=\$E"
+			;;
+		116) # MOV M,H
+			eval "M_$((H<<8|L))=\$H"
+			;;
+		117) # MOV M,L
+			eval "M_$((H<<8|L))=\$L"
+			;;
+
+		118) # HLT
+			break
+			;;
+
+		119) # MOV M,A
+			eval "M_$((H<<8|L))=\$A"
+			;;
+
+		120) # MOV A,B
+			A=$B
+			;;
+		121) # MOV A,C
+			A=$C
+			;;
+		122) # MOV A,D
+			A=$D
+			;;
+		123) # MOV A,E
+			A=$E
+			;;
+		124) # MOV A,H
+			A=$H
+			;;
+		125) # MOV A,L
+			A=$L
+			;;
+		126) # MOV A,M
+			eval "A=\$M_$((H<<8|L))"
+			;;
+		127) # MOV A,A
+			A=$A
+			;;
+
+		# MVI instructions (Move Immediate)
+		6) # MVI B,nn
+			eval "B=\$M_$PC"
+			PC=$((PC+1))
+			;;
+		14) # MVI C,nn
+			eval "C=\$M_$PC"
+			PC=$((PC+1))
+			;;
+		22) # MVI D,nn
+			eval "D=\$M_$PC"
+			PC=$((PC+1))
+			;;
+		30) # MVI E,nn
+			eval "E=\$M_$PC"
+			PC=$((PC+1))
+			;;
+		38) # MVI H,nn
+			eval "H=\$M_$PC"
+			PC=$((PC+1))
+			;;
+		46) # MVI L,nn
+			eval "L=\$M_$PC"
+			PC=$((PC+1))
+			;;
+		54) # MVI M,nn
+			eval "_temp=\$M_$PC"
+			PC=$((PC+1))
+			eval "M_$((H<<8|L))=\$_temp"
+			;;
+		62) # MVI A,nn
+			eval "A=\$M_$PC"
+			PC=$((PC+1))
+			;;
+
+		# LXI instructions (Load immediate 16-bit)
+		1) # LXI B,nnnn
+			eval "C=\$M_$PC"
+			PC=$(((PC+1)&65535))
+			eval "B=\$M_$PC"
+			PC=$((PC+1))
+			;;
+		17) # LXI D,nnnn
+			eval "E=\$M_$PC"
+			PC=$(((PC+1)&65535))
+			eval "D=\$M_$PC"
+			PC=$((PC+1))
+			;;
+		33) # LXI H,nnnn
+			eval "L=\$M_$PC"
+			PC=$(((PC+1)&65535))
+			eval "H=\$M_$PC"
+			PC=$((PC+1))
+			;;
+		49) # LXI SP,nnnn
+			eval "_Z=\$M_$PC"
+			PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"
+			PC=$((PC+1))
+			SP=$((_Z|(_Y<<8)))
+			;;
+
+		128) # ADD B
+			_R=$((A+B))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		129) # ADD C
+			_R=$((A+C))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		130) # ADD D
+			_R=$((A+D))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		131) # ADD E
+			_R=$((A+E))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		132) # ADD H
+			_R=$((A+H))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		133) # ADD L
+			_R=$((A+L))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		134) # ADD M
+			eval "_temp=\$M_$((H<<8|L))"
+			_R=$((A+_temp))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		135) # ADD A
+			_R=$((A+A))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+
+		136) # ADC B
+			_R=$((A+B+(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		137) # ADC C
+			_R=$((A+C+(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		138) # ADC D
+			_R=$((A+D+(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		139) # ADC E
+			_R=$((A+E+(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		140) # ADC H
+			_R=$((A+H+(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		141) # ADC L
+			_R=$((A+L+(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		142) # ADC M
+			eval "_temp=\$M_$((H<<8|L))"
+			_R=$((A+_temp+(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		143) # ADC A
+			_R=$((A+A+(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+
+		144) # SUB B
+			_R=$((A-B))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		145) # SUB C
+			_R=$((A-C))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		146) # SUB D
+			_R=$((A-D))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		147) # SUB E
+			_R=$((A-E))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		148) # SUB H
+			_R=$((A-H))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		149) # SUB L
+			_R=$((A-L))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		150) # SUB M
+			eval "_temp=\$M_$((H<<8|L))"
+			_R=$((A-_temp))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		151) # SUB A
+			_R=$((A-A))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+
+		152) # SBB B
+			_R=$((A-B-(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		153) # SBB C
+			_R=$((A-C-(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		154) # SBB D
+			_R=$((A-D-(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		155) # SBB E
+			_R=$((A-E-(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		156) # SBB H
+			_R=$((A-H-(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		157) # SBB L
+			_R=$((A-L-(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		158) # SBB M
+			eval "_temp=\$M_$((H<<8|L))"; _R=$((A-_temp-(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		159) # SBB A
+			_R=$((A-A-(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+
+		198) # ADI nn
+			eval "_temp=\$M_$PC"; PC=$((PC+1)); _R=$((A+_temp))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		206) # ACI nn
+			eval "_temp=\$M_$PC"; PC=$((PC+1)); _R=$((A+_temp+(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		214) # SUI nn
+			eval "_temp=\$M_$PC"; PC=$((PC+1)); _R=$((A-_temp))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+		222) # SBI nn
+			eval "_temp=\$M_$PC"; PC=$((PC+1)); _R=$((A-_temp-(FLAGS&1)))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			A=$((_R&255))
+			;;
+
+		160) # ANA B
+			A=$((A&B))
+			get_flag $A
+			FLAGS=$(((P&0xfc)|16))
+			;;
+		161) # ANA C
+			A=$((A&C))
+			get_flag $A
+			FLAGS=$(((P&0xfc)|16))
+			;;
+		162) # ANA D
+			A=$((A&D))
+			get_flag $A
+			FLAGS=$(((P&0xfc)|16))
+			;;
+		163) # ANA E
+			A=$((A&E))
+			get_flag $A
+			FLAGS=$(((P&0xfc)|16))
+			;;
+		164) # ANA H
+			A=$((A&H))
+			get_flag $A
+			FLAGS=$(((P&0xfc)|16))
+			;;
+		165) # ANA L
+			A=$((A&L))
+			get_flag $A
+			FLAGS=$(((P&0xfc)|16))
+			;;
+		166) # ANA M
+			eval "_temp=\$M_$((H<<8|L))"; A=$((A&_temp))
+			get_flag $A
+			FLAGS=$(((P&0xfc)|16))
+			;;
+		167) # ANA A
+			A=$((A&A))
+			get_flag $A
+			FLAGS=$(((P&0xfc)|16))
+			;;
+
+		168) # XRA B
+			A=$((A^B))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		169) # XRA C
+			A=$((A^C))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		170) # XRA D
+			A=$((A^D))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		171) # XRA E
+			A=$((A^E))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		172) # XRA H
+			A=$((A^H))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		173) # XRA L
+			A=$((A^L))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		174) # XRA M
+			eval "_temp=\$M_$((H<<8|L))"; A=$((A^_temp))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		175) # XRA A
+			A=$((A^A))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+
+		176) # ORA B
+			A=$((A|B))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		177) # ORA C
+			A=$((A|C))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		178) # ORA D
+			A=$((A|D))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		179) # ORA E
+			A=$((A|E))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		180) # ORA H
+			A=$((A|H))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		181) # ORA L
+			A=$((A|L))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		182) # ORA M
+			eval "_temp=\$M_$((H<<8|L))"; A=$((A|_temp))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		183) # ORA A
+			A=$((A|A))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+
+		184) # CMP B
+			_R=$((A-B))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			;;
+		185) # CMP C
+			_R=$((A-C))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			;;
+		186) # CMP D
+			_R=$((A-D))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			;;
+		187) # CMP E
+			_R=$((A-E))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			;;
+		188) # CMP H
+			_R=$((A-H))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			;;
+		189) # CMP L
+			_R=$((A-L))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			;;
+		190) # CMP M
+			eval "_temp=\$M_$((H<<8|L))"; _R=$((A-_temp))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			;;
+		191) # CMP A
+			_R=$((A-A))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			;;
+
+		# Immediate logical instructions
+		230) # ANI nn
+			eval "_temp=\$M_$PC"; PC=$((PC+1)); A=$((A&_temp))
+			get_flag $A
+			FLAGS=$(((P&0xfc)|16))
+			;;
+		238) # XRI nn
+			eval "_temp=\$M_$PC"; PC=$((PC+1)); A=$((A^_temp))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		246) # ORI nn
+			eval "_temp=\$M_$PC"; PC=$((PC+1)); A=$((A|_temp))
+			get_flag $A
+			FLAGS=$((P&0xfc))
+			;;
+		254) # CPI nn
+			eval "_temp=\$M_$PC"; PC=$((PC+1)); _R=$((A-_temp))
+			get_flag $((_R&255))
+			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			;;
+
+		204) # CZ nnnn (Call if Zero)
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			if [ $((FLAGS&64)) != 0 ]; then
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+				PC=$((_Z|(_Y<<8)))
+			fi
+			;;
+		212) # CNC nnnn (Call if No Carry)
+			eval "_Z=\$M_$PC"; PC=$((PC+1))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			if [ $((FLAGS&1)) = 0 ]; then
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+				PC=$((_Z|(_Y<<8)))
+			fi
+			;;
+		220) # CC nnnn (Call if Carry)
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			if [ $((FLAGS&1)) != 0 ]; then
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+				PC=$((_Z|(_Y<<8)))
+			fi
+			;;
+		228) # CPO nnnn (Call if Parity Odd)
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			if [ $((FLAGS&4)) = 0 ]; then
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+				PC=$((_Z|(_Y<<8)))
+			fi
+			;;
+		236) # CPE nnnn (Call if Parity Even)
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			if [ $((FLAGS&4)) != 0 ]; then
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+				PC=$((_Z|(_Y<<8)))
+			fi
+			;;
+		244) # CP nnnn (Call if Plus)
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			if [ $((FLAGS&128)) = 0 ]; then
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+				PC=$((_Z|(_Y<<8)))
+			fi
+			;;
+		252) # CM nnnn (Call if Minus)
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			if [ $((FLAGS&128)) != 0 ]; then
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+				PC=$((_Z|(_Y<<8)))
+			fi
+			;;
+		196) # CNZ nnnn (Call if Not Zero)
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			if [ $((FLAGS&64)) = 0 ]; then
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+				SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+				PC=$((_Z|(_Y<<8)))
+			fi
+			;;
+		195) # JMP nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			PC=$((_Z|(_Y<<8)))
+			;;
+		194) # JNZ nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			[ $((FLAGS&64)) = 0 ] && PC=$((_Z|(_Y<<8)))
+			;;
+		202) # JZ nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			[ $((FLAGS&64)) != 0 ] && PC=$((_Z|(_Y<<8)))
+			;;
+		210) # JNC nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			[ $((FLAGS&1)) = 0 ] && PC=$((_Z|(_Y<<8)))
+			;;
+		218) # JC nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			[ $((FLAGS&1)) != 0 ] && PC=$((_Z|(_Y<<8)))
+			;;
+		226) # JPO nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			[ $((FLAGS&4)) = 0 ] && PC=$((_Z|(_Y<<8)))
+			;;
+		234) # JPE nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			[ $((FLAGS&4)) != 0 ] && PC=$((_Z|(_Y<<8)))
+			;;
+		242) # JP nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			[ $((FLAGS&128)) = 0 ] && PC=$((_Z|(_Y<<8)))
+			;;
+		250) # JM nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			[ $((FLAGS&128)) != 0 ] && PC=$((_Z|(_Y<<8)))
+			;;
+
+		201) # RET
+			do_ret
+			;;
+		192) # RNZ
+			[ $((FLAGS&64)) = 0 ] && do_ret
+			;;
+		200) # RZ
+			[ $((FLAGS&64)) != 0 ] && do_ret
+			;;
+		208) # RNC
+			[ $((FLAGS&1)) = 0 ] && do_ret
+			;;
+		216) # RC
+			[ $((FLAGS&1)) != 0 ] && do_ret
+			;;
+		224) # RPO
+			[ $((FLAGS&4)) = 0 ] && do_ret
+			;;
+		232) # RPE
+			[ $((FLAGS&4)) != 0 ] && do_ret
+			;;
+		240) # RP
+			[ $((FLAGS&128)) = 0 ] && do_ret
+			;;
+		248) # RM
+			[ $((FLAGS&128)) != 0 ] && do_ret
+			;;
+
+		205|221|237|253) # CALL nnnn
+			eval "_Z=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "_Y=\$M_$PC"; PC=$(((PC+1)&65535))
+			eval "M_$((SP+65535&65535))=$((PC>>8))"
+			eval "M_$((SP+65534&65535))=$((PC&255))"
+			if [ $opcode = 237 ] && [ $_Z = 237 ] && [ $_Y -gt 1 ]; then
+				eval "_Z=\$M_64508"
+				[ $_Y = 2 ] && _Y=read_disk || _Y=write_disk
+				eval "_t1=\$M_64511"; eval "_t2=\$M_64506"; eval "_t3=\$M_64507"; eval "_t4=\$M_64510"; eval "_t5=\$M_64509"
+				$_Y $((_t1-1)) $((_t2|(_t3<<8))) $((_Z|(((_t4<<8)|_t5)<<7))) && A=0 || A=1
+			else
+				PC=$((_Z|(_Y<<8)))
+				SP=$((SP-2))
+			fi
+			;;
+
+		197) # PUSH B
+			SP=$((SP-1&65535))
+			eval "M_$SP=\$B"
+			SP=$((SP-1&65535))
+			eval "M_$SP=\$C"
+			;;
+		213) # PUSH D
+			SP=$((SP-1&65535))
+			eval "M_$SP=\$D"
+			SP=$((SP-1&65535))
+			eval "M_$SP=\$E"
+			;;
+		229) # PUSH H
+			SP=$((SP-1&65535))
+			eval "M_$SP=\$H"
+			SP=$((SP-1&65535))
+			eval "M_$SP=\$L"
+			;;
+		245) # PUSH PSW
+			SP=$((SP-1&65535))
+			eval "M_$SP=\$A"
+			SP=$((SP-1&65535))
+			eval "M_$SP=\$FLAGS"
+			;;
+
+		193) # POP B
+			eval "C=\$M_$SP"
+			SP=$(((SP+1)&65535))
+			eval "B=\$M_$SP"
+			SP=$((SP+1))
+			;;
+		209) # POP D
+			eval "E=\$M_$SP"
+			SP=$(((SP+1)&65535))
+			eval "D=\$M_$SP"
+			SP=$((SP+1))
+			;;
+		225) # POP H
+			eval "L=\$M_$SP"
+			SP=$(((SP+1)&65535))
+			eval "H=\$M_$SP"
+			SP=$((SP+1))
+			;;
+		241) # POP PSW
+			eval "FLAGS=\$M_$SP"
+			SP=$(((SP+1)&65535))
+			eval "A=\$M_$SP"
+			SP=$((SP+1))
+			;;
+
+		4) # INR B
+			B=$((B+1&255))
+			get_flag $B
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((B^(B-1))>>4)&16)))
+			;;
+		12) # INR C
+			C=$((C+1&255))
+			get_flag $C
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((C^(C-1))>>4)&16)))
+			;;
+		20) # INR D
+			D=$((D+1&255))
+			get_flag $D
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((D^(D-1))>>4)&16)))
+			;;
+		28) # INR E
+			E=$((E+1&255))
+			get_flag $E
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((E^(E-1))>>4)&16)))
+			;;
+		36) # INR H
+			H=$((H+1&255))
+			get_flag $H
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((H^(H-1))>>4)&16)))
+			;;
+		44) # INR L
+			L=$((L+1&255))
+			get_flag $L
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((L^(L-1))>>4)&16)))
+			;;
+		52) # INR M
+			_addr=$((H<<8|L))
+			eval "_temp=\$M_$_addr"
+			_temp=$((_temp+1&255))
+			eval "M_$_addr=\$_temp"
+			get_flag $_temp
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((_temp^(_temp-1))>>4)&16)))
+			;;
+		60) # INR A
+			A=$((A+1&255))
+			get_flag $A
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((A^(A-1))>>4)&16)))
+			;;
+
+		5) # DCR B
+			B=$((B-1&255))
+			get_flag $B
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((B^(B+1))>>4)&16)))
+			;;
+		13) # DCR C
+			C=$((C-1&255))
+			get_flag $C
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((C^(C+1))>>4)&16)))
+			;;
+		21) # DCR D
+			D=$((D-1&255))
+			get_flag $D
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((D^(D+1))>>4)&16)))
+			;;
+		29) # DCR E
+			E=$((E-1&255))
+			get_flag $E
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((E^(E+1))>>4)&16)))
+			;;
+		37) # DCR H
+			H=$((H-1&255))
+			get_flag $H
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((H^(H+1))>>4)&16)))
+			;;
+		45) # DCR L
+			L=$((L-1&255))
+			get_flag $L
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((L^(L+1))>>4)&16)))
+			;;
+		53) # DCR M
+			_addr=$((H<<8|L))
+			eval "_temp=\$M_$_addr"
+			_temp=$((_temp-1&255))
+			eval "M_$_addr=\$_temp"
+			get_flag $_temp
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((_temp^(_temp+1))>>4)&16)))
+			;;
+		61) # DCR A
+			A=$((A-1&255))
+			get_flag $A
+			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((A^(A+1))>>4)&16)))
+			;;
+
+		# INX/DCX instructions (16-bit increment/decrement)
+		3) # INX B
+			C=$((C+1&255))
+			[ $C = 0 ] && B=$((B+1&255))
+			;;
+		19) # INX D
+			E=$((E+1&255))
+			[ $E = 0 ] && D=$((D+1&255))
+			;;
+		35) # INX H
+			L=$((L+1&255))
+			[ $L = 0 ] && H=$((H+1&255))
+			;;
+		51) # INX SP
+			SP=$((SP+1&65535))
+			;;
+		11) # DCX B
+			C=$((C-1&255))
+			[ $C = 255 ] && B=$((B-1&255))
+			;;
+		27) # DCX D
+			E=$((E-1&255))
+			[ $E = 255 ] && D=$((D-1&255))
+			;;
+		43) # DCX H
+			L=$((L-1&255))
+			[ $L = 255 ] && H=$((H-1&255))
+			;;
+		59) # DCX SP
+			SP=$((SP-1&65535))
+			;;
+
+		2) # STAX B
+			eval "M_$((B<<8|C))=\$A"
+			;;
+		18) # STAX D
+			eval "M_$((D<<8|E))=\$A"
+			;;
+		10) # LDAX B
+			eval "A=\$M_$((B<<8|C))"
+			;;
+		26) # LDAX D
+			eval "A=\$M_$((D<<8|E))"
+			;;
+		42) # LHLD nnnn
+			eval "_Z=\$M_$PC"; PC=$((PC+1))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			_addr=$((_Z|(_Y<<8)))
+			eval "L=\$M_$_addr"
+			eval "H=\$M_$((_addr+1))"
+			;;
+		34) # SHLD nnnn
+			eval "_Z=\$M_$PC"; PC=$((PC+1))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			_addr=$((_Z|(_Y<<8)))
+			eval "M_$_addr=\$L"
+			eval "M_$((_addr+1))=\$H"
+			;;
+		58) # LDA nnnn
+			eval "_Z=\$M_$PC"; PC=$((PC+1))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			eval "A=\$M_$((_Z|(_Y<<8)))"
+			;;
+		50) # STA nnnn
+			eval "_Z=\$M_$PC"; PC=$((PC+1))
+			eval "_Y=\$M_$PC"; PC=$((PC+1))
+			eval "M_$((_Z|(_Y<<8)))=\$A"
+			;;
+		9) # DAD B
+			_HL=$((H<<8|L))
+			_BC=$((B<<8|C))
+			_R=$((_HL+_BC))
+			H=$((_R>>8&255))
+			L=$((_R&255))
+			FLAGS=$(((FLAGS&0xfe)|(_R>>16&1)))
+			;;
+		25) # DAD D
+			_HL=$((H<<8|L))
+			_DE=$((D<<8|E))
+			_R=$((_HL+_DE))
+			H=$((_R>>8&255))
+			L=$((_R&255))
+			FLAGS=$(((FLAGS&0xfe)|(_R>>16&1)))
+			;;
+		41) # DAD H
+			_HL=$((H<<8|L))
+			_R=$((_HL+_HL))
+			H=$((_R>>8&255))
+			L=$((_R&255))
+			FLAGS=$(((FLAGS&0xfe)|(_R>>16&1)))
+			;;
+		57) # DAD SP
+			_HL=$((H<<8|L))
+			_R=$((_HL+SP))
+			H=$((_R>>8&255))
+			L=$((_R&255))
+			FLAGS=$(((FLAGS&0xfe)|(_R>>16&1)))
+			;;
+		7) # RLC
+			_bit=$((A>>7))
+			A=$(((A<<1|_bit)&255))
+			FLAGS=$(((FLAGS&0xfe)|_bit))
+			;;
+		15) # RRC
+			_bit=$((A&1))
+			A=$(((A>>1)|(_bit<<7)))
+			FLAGS=$(((FLAGS&0xfe)|_bit))
+			;;
+		23) # RAL
+			_temp=$A
+			A=$(((A<<1|(FLAGS&1))&255))
+			FLAGS=$(((FLAGS&0xfe)|(_temp>>7)))
+			;;
+		31) # RAR
+			_temp=$A
+			A=$((A>>1|(FLAGS&1)<<7))
+			FLAGS=$(((FLAGS&0xfe)|(_temp&1)))
+			;;
+		39) # DAA
+			_carry=$((FLAGS&1))
+			[ $((A&15)) -gt 9 ] || [ $((FLAGS&16)) != 0 ] && A=$((A+6))
+			[ $A -gt 159 ] || [ $_carry != 0 ] && A=$((A+96)) && _carry=1
+			A=$((A&255))
+			get_flag $A
+			FLAGS=$(((_carry)|(P&0xfc)|((A^(A-1))>>4&16)))
+			;;
+		47) # CMA
+			A=$((A^255))
+			;;
+		55) # STC
+			FLAGS=$((FLAGS|1))
+			;;
+		63) # CMC
+			FLAGS=$((FLAGS^1))
+			;;
+		233) # PCHL
+			PC=$((H<<8|L))
+			;;
+		249) # SPHL
+			SP=$((H<<8|L))
+			;;
+		235) # XCHG
+			_temp=$D
+			D=$H
+			H=$_temp
+			_temp=$E
+			E=$L
+			L=$_temp
+			;;
+		227) # XTHL
+			_temp=$L
+			eval "L=\$M_$SP"
+			eval "M_$SP=\$_temp"
+			_temp=$H
+			eval "H=\$M_$(((SP+1)&65535))"
+			eval "M_$(((SP+1)&65535))=\$_temp"
+			;;
+
+		243) # DI
+			;;
+		251) # EI
+			;;
+
+		211)
+			# OUT nn
+			eval "port=\$M_$PC"
+			case $port in
+				0|2)
+					printf "\\`printf %03o $A`"
+					;;
+			esac
+			PC=$((PC+1))
+			;;
+		219)
+			# IN nn
+			eval "_temp=\$M_$PC"
+			case $_temp in
+				0)
+					if [ -n "$key" ] || read_key; then
+						A=255
+					else
+						A=0
+					fi
+					;;
+				1)
+					# In the previous bash-based version,
+					# the read command in bash has a bug
+					# that it will interfere with SIGINT
+					# handling setting. The following
+					# workaround is necessary if read_key
+					# is implemented using the
+					# bash-specific read command to read
+					# the input key.
+					#if [ -z "$key" ]; then
+					#	# Workaround a bash(1) bug
+					#	got_sigint=
+					#	trap got_sigint=1 INT
+					#	if ! read_key; then
+					#		[ -n "$got_sigint" ] && sigint_handler
+					#		A=0
+					#		key=
+					#	fi
+					#	trap sigint_handler INT
+					#fi
+					if [ -n "$key" ] || read_key; then
+						A=$key
+						key=
+					else
+						A=0
+					fi
+					;;
+				2)
+					echo "Not implemented" 1>&2
+					A=0
+					;;
+			esac
+			PC=$((PC+1))
+			;;
+
+		199) # RST 0
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+			PC=0
+			;;
+		207) # RST 1
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+			PC=8
+			;;
+		215) # RST 2
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+			PC=16
+			;;
+		223) # RST 3
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+			PC=24
+			;;
+		231) # RST 4
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+			PC=32
+			;;
+		239) # RST 5
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+			PC=40
+			;;
+		247) # RST 6
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+			PC=48
+			;;
+		255) # RST 7
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC>>8))"
+			SP=$((SP-1&65535)); eval "M_$SP=$((PC&255))"
+			PC=56
+			;;
+
+		*)
+			printf "Unimplemented opcode 0x%02x\\n" $opcode 1>&2
+			;;
+	esac
+	PC=$((PC&65535))
+	SP=$((SP&65535))
+	#printf '\r                    \rPC=%04x SP=%04x\r' $PC $SP 1>&2
+done
