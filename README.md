@@ -70,6 +70,16 @@ Set this to a non-empty string to make the emulator passing `iflag=nonblock` for
 
 This **dd(1)** operand is a non-standard extension of GNU dd; its use is normally not recommended because it may leave your terminal in non-blocking state after exiting of the emulator.
 
+#### I8080ASH_ASSUME_NONBLOCK_STDIN
+
+Normally the emulator will run a simple Perl script on startup to make stdin non-blocking if necessary. If your stdin is already in non-blocking state, set this to a non-empty string to tell the emulator to skip this step.
+
+#### I8080ASH_USE_STTY_MIN_TIME
+
+Set this to a non-empty string to try to make the terminal on stdin non-blocking by running `stty min 0 time 0`. Ignored if stdin is not a terminal.
+
+This may be necessary on Solaris, as the usual method for making a file descriptor non-blocking may be ineffective for terminals, on this operating system.
+
 #### I8080ASH_PRINT_REGISTERS_ON_HALT
 
 Set this to a non-empty string to make the emulator printing register values to stderr on execution of HLT instruction, before exiting.

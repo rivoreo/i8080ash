@@ -26,6 +26,7 @@ set -e
 stdin_status_flags=
 
 set_stdin_nonblock() {
+	[ -n "$I8080ASH_ASSUME_NONBLOCK_STDIN" ] && return
 	if [ -z "$stdin_status_flags" ]; then
 		stdin_status_flags="`perl -e 'use strict; use POSIX; print STDOUT fcntl(STDIN, F_GETFL, 0);'`" || return
 		stdin_status_flags="${stdin_status_flags%% *}"
@@ -203,6 +204,7 @@ dump_memory() {
 sigint_handler() {
 	local answer
 	restore_stdin_status_flags
+	[ -n "$I8080ASH_USE_STTY_MIN_TIME" ] && [ -t 0 ] && stty sane -icanon -echo
 	cat 1>&2 << EOT
 Ctrl-C pressed, select an action:
  1. Pass ^C into emulator as keyboard input.
@@ -284,8 +286,13 @@ if { [ -z "$BASH" ] || [ -z "$I8080ASH_USE_BASH_READ" ]; } && ! set_stdin_nonblo
 	exit 1
 fi
 if [ -t 0 ]; then
-	trap "restore_stdin_status_flags; stty icanon echo" EXIT
-	stty -icanon -echo
+	if [ -n "$I8080ASH_USE_STTY_MIN_TIME" ]; then
+		trap "restore_stdin_status_flags; stty icanon echo sane" EXIT
+		stty -icanon -echo min 0 time 0
+	else
+		trap "restore_stdin_status_flags; stty icanon echo" EXIT
+		stty -icanon -echo
+	fi
 else
 	trap restore_stdin_status_flags EXIT
 fi
