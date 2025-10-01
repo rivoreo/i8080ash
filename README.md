@@ -74,11 +74,11 @@ This **dd(1)** operand is a non-standard extension of GNU dd; its use is normall
 
 Normally the emulator will run a simple Perl script on startup to make stdin non-blocking if necessary. If your stdin is already in non-blocking state, set this to a non-empty string to tell the emulator to skip this step.
 
-#### I8080ASH_USE_STTY_MIN_TIME
+#### I8080ASH_USE_STTY_MIN
 
-Set this to a non-empty string to try to make the terminal on stdin non-blocking by running `stty min 0 time 0`. Ignored if stdin is not a terminal.
+Set this to a non-empty string to try to disable the terminal buffering for stdin, by running `stty min 1`. Ignored if stdin is not a terminal.
 
-This may be necessary on Solaris, as the usual method for making a file descriptor non-blocking may be ineffective for terminals, on this operating system.
+This is necessary on some operating systems, where the MIN value for noncanonical mode is greater than 1 by default.
 
 #### I8080ASH_PRINT_REGISTERS_ON_HALT
 
