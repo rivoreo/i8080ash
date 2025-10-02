@@ -97,20 +97,32 @@ fi
 
 read_key() {
 	if [ -n "$I8080ASH_USE_BASH_READ" ] && [ -n "$BASH" ]; then
-		local timeout variable
+		local timeout variable r
 		if [ "$1" = --check ]; then
 			timeout=0
 			variable=variable
 		else
 			timeout=0.5
 			variable=key
+			# bash behaves erroneously if a read command is
+			# interrupted by a signal and the signal handler runs
+			# another read command; workaround this bug by
+			# deferring the handling of SIGINT
+			got_sigint=
+			trap got_sigint=1 INT
 		fi
-		IFS= read -d "" -r -s -n 1 -t $timeout $variable || return
+		IFS= read -d "" -r -s -n 1 -t $timeout $variable
+		r=$?
 		if [ "$1" != --check ]; then
+			trap sigint_handler INT
+			if [ $r != 0 ]; then
+				[ -n "$got_sigint" ] && sigint_handler
+				return $r
+			fi
 			[ "$key" = "
 " ] && key=13 || key=`printf %u "'$key"`
 		fi
-		return
+		return $r
 	fi
 	# Must use dd(1) to limit read size to 1 byte, otherwise hexdump(1) or
 	# xxd(1) will read ahead of the size specified by '-n' or '-l',
