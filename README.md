@@ -44,7 +44,7 @@ In addition to a supported shell, some other basic external commands are require
 
 Both variants accept a single path name to the memory image file. Because `i8080-rw.ash` updates the memory image file in-place, it is recommended to first duplicate the memory image file, when trying out this variant.
 
-If environment variables `A`, `B`, `C`, `D`, `E`, `H`, `L`, `SP`, `PC` and `FLAGS` are set to appropriate values, they will used for as the initial values of the respective registers to start emulation; this can be used to restore a previously interrupted emulation.
+If environment variables `A`, `B`, `C`, `D`, `E`, `H`, `L`, `SP`, `PC`, `CARRY`, `PARITY`, `AUXCARRY`, `ZERO` and `SIGN` are set to appropriate values, they will used for as the initial values of the respective registers and status flags to start emulation; this can be used to restore a previously interrupted emulation.
 
 When running the emulator, pressing Ctrl-C will giving a menu for different actions. If you choose to dump registers and terminate emulation, you will be able to restore this emulation state by setting the register values in environment variables, as described above.
 
@@ -97,7 +97,7 @@ sh i8080-rw.ash /dev/fb0
 ```
 
 ```sh
-A=0 B=0 C=255 D=77 E=255 H=238 L=212 SP=61245 PC=64277 FLAGS=84 sh i8080.ash my-last-save
+A=0 B=0 C=255 D=77 E=255 H=238 L=212 SP=61245 PC=64277 CARRY=0 PARITY=1 AUXCARRY=1 ZERO=1 SIGN=0 sh i8080.ash my-last-save
 ```
 
 ## Transfer files into virtual disk image

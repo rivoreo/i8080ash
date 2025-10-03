@@ -41,9 +41,9 @@ restore_stdin_status_flags() {
 	perl -e "use strict; use POSIX; fcntl(STDIN, F_SETFL, $stdin_status_flags);"
 }
 
-# Lookup table for flag values
-# Will update external variable 'P'
-get_flag() {
+# Lookup table for parity, zero and sign flags
+# Updates external variable 'PZS'
+get_pzs_flags() {
 	local i=$1
 	set -- \
 		0x44 0x00 0x00 0x04 0x00 0x04 0x04 0x00 0x00 0x04 0x04 0x00 0x04 0x00 0x00 0x04 \
@@ -62,7 +62,7 @@ get_flag() {
 		0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84 0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 \
 		0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84 0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 \
 		0x84 0x80 0x80 0x84 0x80 0x84 0x84 0x80 0x80 0x84 0x84 0x80 0x84 0x80 0x80 0x84
-	eval "P=\${$((i+1))}"
+	eval "PZS=\${$((i+1))}"
 }
 
 if [ "`printf '' | hexdump -v -e '/1 \"%02x\"' 2> /dev/null`" = 03 ]; then
@@ -177,7 +177,11 @@ write_disk() {
 }
 
 print_registers() {
-	printf "A=0x%02x B=0x%02x C=0x%02x D=0x%02x E=0x%02x H=0x%02x L=0x%02x SP=0x%04x PC=0x%04x FLAGS=0x%02x\\n" $A $B $C $D $E $H $L $SP $PC $FLAGS 1>&2
+	if [ "$1" = --raw ]; then
+		printf "A=0x%02x B=0x%02x C=0x%02x D=0x%02x E=0x%02x H=0x%02x L=0x%02x SP=0x%04x PC=0x%04x FLAGS=0x%02x\\n" $A $B $C $D $E $H $L $SP $PC $FLAGS 1>&2
+	else
+		printf "A=0x%02x B=0x%02x C=0x%02x D=0x%02x E=0x%02x H=0x%02x L=0x%02x SP=0x%04x PC=0x%04x CARRY=%s PARITY=%s AUXCARRY=%s ZERO=%s SIGN=%s\\n" $A $B $C $D $E $H $L $SP $PC $((FLAGS&1)) $((!!(FLAGS&(1<<2)))) $((!!(FLAGS&(1<<4)))) $((!!(FLAGS&(1<<6)))) $((!!(FLAGS&(1<<7)))) 1>&2
+	fi
 }
 
 sigint_handler() {
@@ -232,6 +236,15 @@ for register in A B C D E H L SP PC FLAGS; do
 	eval "$register=\$v"
 done
 unset register v
+
+i=0
+for flag in CARRY "" PARITY "" AUXCARRY "" ZERO SIGN; do
+	if [ -n "$flag" ] && eval "v=\"\$$flag\"" && [ -n "$v" ]; then
+		[ $((v)) -gt 0 ] && FLAGS=$((FLAGS|(1<<i))) || FLAGS=$((FLAGS&~(1<<i)&65535))
+	fi
+	i=$((i+1))
+done
+unset i flag v
 
 # Pending input key
 key=
@@ -332,7 +345,6 @@ while true; do
 			D=$C
 			;;
 		82) # MOV D,D
-			D=$D
 			;;
 		83) # MOV D,E
 			D=$E
@@ -472,7 +484,6 @@ while true; do
 			A=`read_memory $((H<<8|L))`
 			;;
 		127) # MOV A,A
-			A=$A
 			;;
 
 		# MVI instructions (Move Immediate)
@@ -538,417 +549,415 @@ while true; do
 
 		128) # ADD B
 			_R=$((A+B))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		129) # ADD C
 			_R=$((A+C))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		130) # ADD D
 			_R=$((A+D))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		131) # ADD E
 			_R=$((A+E))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		132) # ADD H
 			_R=$((A+H))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		133) # ADD L
 			_R=$((A+L))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		134) # ADD M
 			_R=$((A+`read_memory $((H<<8|L))`))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		135) # ADD A
 			_R=$((A+A))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 
 		136) # ADC B
 			_R=$((A+B+(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		137) # ADC C
 			_R=$((A+C+(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		138) # ADC D
 			_R=$((A+D+(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		139) # ADC E
 			_R=$((A+E+(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		140) # ADC H
 			_R=$((A+H+(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		141) # ADC L
 			_R=$((A+L+(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		142) # ADC M
 			_R=$((A+`read_memory $((H<<8|L))`+(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		143) # ADC A
 			_R=$((A+A+(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 
 		144) # SUB B
 			_R=$((A-B))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		145) # SUB C
 			_R=$((A-C))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		146) # SUB D
 			_R=$((A-D))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		147) # SUB E
 			_R=$((A-E))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		148) # SUB H
 			_R=$((A-H))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		149) # SUB L
 			_R=$((A-L))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		150) # SUB M
 			_R=$((A-`read_memory $((H<<8|L))`))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		151) # SUB A
 			_R=$((A-A))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 
 		152) # SBB B
 			_R=$((A-B-(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		153) # SBB C
 			_R=$((A-C-(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		154) # SBB D
 			_R=$((A-D-(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		155) # SBB E
 			_R=$((A-E-(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		156) # SBB H
 			_R=$((A-H-(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		157) # SBB L
 			_R=$((A-L-(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		158) # SBB M
 			_R=$((A-`read_memory $((H<<8|L))`-(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		159) # SBB A
 			_R=$((A-A-(FLAGS&1)))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 
 		198) # ADI nn
 			_R=$((A+`read_memory $PC`))
 			PC=$((PC+1))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		206) # ACI nn
 			_R=$((A+`read_memory $PC`+(FLAGS&1)))
 			PC=$((PC+1))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		214) # SUI nn
 			_R=$((A-`read_memory $PC`))
 			PC=$((PC+1))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 		222) # SBI nn
 			_R=$((A-`read_memory $PC`-(FLAGS&1)))
 			PC=$((PC+1))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			A=$((_R&255))
 			;;
 
 		160) # ANA B
 			A=$((A&B))
-			get_flag $A
-			FLAGS=$(((P&0xfc)|16))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		161) # ANA C
 			A=$((A&C))
-			get_flag $A
-			FLAGS=$(((P&0xfc)|16))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		162) # ANA D
 			A=$((A&D))
-			get_flag $A
-			FLAGS=$(((P&0xfc)|16))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		163) # ANA E
 			A=$((A&E))
-			get_flag $A
-			FLAGS=$(((P&0xfc)|16))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		164) # ANA H
 			A=$((A&H))
-			get_flag $A
-			FLAGS=$(((P&0xfc)|16))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		165) # ANA L
 			A=$((A&L))
-			get_flag $A
-			FLAGS=$(((P&0xfc)|16))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		166) # ANA M
 			A=$((A&`read_memory $((H<<8|L))`))
-			get_flag $A
-			FLAGS=$(((P&0xfc)|16))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		167) # ANA A
-			A=$((A&A))
-			get_flag $A
-			FLAGS=$(((P&0xfc)|16))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 
 		168) # XRA B
 			A=$((A^B))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		169) # XRA C
 			A=$((A^C))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		170) # XRA D
 			A=$((A^D))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		171) # XRA E
 			A=$((A^E))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		172) # XRA H
 			A=$((A^H))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		173) # XRA L
 			A=$((A^L))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		174) # XRA M
 			A=$((A^`read_memory $((H<<8|L))`))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		175) # XRA A
-			A=$((A^A))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			A=0
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 
 		176) # ORA B
 			A=$((A|B))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		177) # ORA C
 			A=$((A|C))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		178) # ORA D
 			A=$((A|D))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		179) # ORA E
 			A=$((A|E))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		180) # ORA H
 			A=$((A|H))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		181) # ORA L
 			A=$((A|L))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		182) # ORA M
 			A=$((A|`read_memory $((H<<8|L))`))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		183) # ORA A
-			A=$((A|A))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 
 		184) # CMP B
 			_R=$((A-B))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			;;
 		185) # CMP C
 			_R=$((A-C))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			;;
 		186) # CMP D
 			_R=$((A-D))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			;;
 		187) # CMP E
 			_R=$((A-E))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			;;
 		188) # CMP H
 			_R=$((A-H))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			;;
 		189) # CMP L
 			_R=$((A-L))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			;;
 		190) # CMP M
 			_R=$((A-`read_memory $((H<<8|L))`))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			;;
 		191) # CMP A
 			_R=$((A-A))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			;;
 
 		# Immediate logical instructions
 		230) # ANI nn
 			A=$((A&`read_memory $PC`))
 			PC=$((PC+1))
-			get_flag $A
-			FLAGS=$(((P&0xfc)|16))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		238) # XRI nn
 			A=$((A^`read_memory $PC`))
 			PC=$((PC+1))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		246) # ORI nn
 			A=$((A|`read_memory $PC`))
 			PC=$((PC+1))
-			get_flag $A
-			FLAGS=$((P&0xfc))
+			get_pzs_flags $A
+			FLAGS=$PZS
 			;;
 		254) # CPI nn
 			_R=$((A-`read_memory $PC`))
 			PC=$((PC+1))
-			get_flag $((_R&255))
-			FLAGS=$(((_R>>8&1)|(P&0xfc)|(_R>>4&16)))
+			get_pzs_flags $((_R&255))
+			FLAGS=$(((_R>>8&1)|PZS|(_R>>4&16)))
 			;;
 
 		204) # CZ nnnn (Call if Zero)
@@ -1096,11 +1105,6 @@ while true; do
 			fi
 			;;
 
-		199) # RST 0
-			SP=$((SP-1&65535)); write_memory $SP $((PC>>8))
-			SP=$((SP-1&65535)); write_memory $SP $((PC&255))
-			PC=0
-			;;
 		197) # PUSH B
 			SP=$((SP-1&65535))
 			write_memory $SP $B
@@ -1123,7 +1127,7 @@ while true; do
 			SP=$((SP-1&65535))
 			write_memory $SP $A
 			SP=$((SP-1&65535))
-			write_memory $SP $FLAGS
+			write_memory $SP $(((FLAGS&0xd7)|2))
 			;;
 
 		193) # POP B
@@ -1145,7 +1149,7 @@ while true; do
 			SP=$((SP+1))
 			;;
 		241) # POP PSW
-			FLAGS=`read_memory $SP`
+			FLAGS=$((`read_memory $SP`&0xd5))
 			SP=$(((SP+1)&65535))
 			A=`read_memory $SP`
 			SP=$((SP+1))
@@ -1153,88 +1157,88 @@ while true; do
 
 		4) # INR B
 			B=$((B+1&255))
-			get_flag $B
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((B^(B-1))>>4)&16)))
+			get_pzs_flags $B
+			FLAGS=$(((FLAGS&1)|PZS|(((B^(B-1))>>4)&16)))
 			;;
 		12) # INR C
 			C=$((C+1&255))
-			get_flag $C
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((C^(C-1))>>4)&16)))
+			get_pzs_flags $C
+			FLAGS=$(((FLAGS&1)|PZS|(((C^(C-1))>>4)&16)))
 			;;
 		20) # INR D
 			D=$((D+1&255))
-			get_flag $D
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((D^(D-1))>>4)&16)))
+			get_pzs_flags $D
+			FLAGS=$(((FLAGS&1)|PZS|(((D^(D-1))>>4)&16)))
 			;;
 		28) # INR E
 			E=$((E+1&255))
-			get_flag $E
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((E^(E-1))>>4)&16)))
+			get_pzs_flags $E
+			FLAGS=$(((FLAGS&1)|PZS|(((E^(E-1))>>4)&16)))
 			;;
 		36) # INR H
 			H=$((H+1&255))
-			get_flag $H
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((H^(H-1))>>4)&16)))
+			get_pzs_flags $H
+			FLAGS=$(((FLAGS&1)|PZS|(((H^(H-1))>>4)&16)))
 			;;
 		44) # INR L
 			L=$((L+1&255))
-			get_flag $L
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((L^(L-1))>>4)&16)))
+			get_pzs_flags $L
+			FLAGS=$(((FLAGS&1)|PZS|(((L^(L-1))>>4)&16)))
 			;;
 		52) # INR M
 			_addr=$((H<<8|L))
 			_temp=$((`read_memory $_addr`+1&255))
 			write_memory $_addr $_temp
-			get_flag $_temp
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((_temp^(_temp-1))>>4)&16)))
+			get_pzs_flags $_temp
+			FLAGS=$(((FLAGS&1)|PZS|(((_temp^(_temp-1))>>4)&16)))
 			;;
 		60) # INR A
 			A=$((A+1&255))
-			get_flag $A
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((A^(A-1))>>4)&16)))
+			get_pzs_flags $A
+			FLAGS=$(((FLAGS&1)|PZS|(((A^(A-1))>>4)&16)))
 			;;
 
 		5) # DCR B
 			B=$((B-1&255))
-			get_flag $B
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((B^(B+1))>>4)&16)))
+			get_pzs_flags $B
+			FLAGS=$(((FLAGS&1)|PZS|(((B^(B+1))>>4)&16)))
 			;;
 		13) # DCR C
 			C=$((C-1&255))
-			get_flag $C
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((C^(C+1))>>4)&16)))
+			get_pzs_flags $C
+			FLAGS=$(((FLAGS&1)|PZS|(((C^(C+1))>>4)&16)))
 			;;
 		21) # DCR D
 			D=$((D-1&255))
-			get_flag $D
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((D^(D+1))>>4)&16)))
+			get_pzs_flags $D
+			FLAGS=$(((FLAGS&1)|PZS|(((D^(D+1))>>4)&16)))
 			;;
 		29) # DCR E
 			E=$((E-1&255))
-			get_flag $E
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((E^(E+1))>>4)&16)))
+			get_pzs_flags $E
+			FLAGS=$(((FLAGS&1)|PZS|(((E^(E+1))>>4)&16)))
 			;;
 		37) # DCR H
 			H=$((H-1&255))
-			get_flag $H
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((H^(H+1))>>4)&16)))
+			get_pzs_flags $H
+			FLAGS=$(((FLAGS&1)|PZS|(((H^(H+1))>>4)&16)))
 			;;
 		45) # DCR L
 			L=$((L-1&255))
-			get_flag $L
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((L^(L+1))>>4)&16)))
+			get_pzs_flags $L
+			FLAGS=$(((FLAGS&1)|PZS|(((L^(L+1))>>4)&16)))
 			;;
 		53) # DCR M
 			_addr=$((H<<8|L))
 			_temp=$((`read_memory $_addr`-1&255))
 			write_memory $_addr $_temp
-			get_flag $_temp
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((_temp^(_temp+1))>>4)&16)))
+			get_pzs_flags $_temp
+			FLAGS=$(((FLAGS&1)|PZS|(((_temp^(_temp+1))>>4)&16)))
 			;;
 		61) # DCR A
 			A=$((A-1&255))
-			get_flag $A
-			FLAGS=$(((FLAGS&1)|(P&0xfc)|(((A^(A+1))>>4)&16)))
+			get_pzs_flags $A
+			FLAGS=$(((FLAGS&1)|PZS|(((A^(A+1))>>4)&16)))
 			;;
 
 		# INX/DCX instructions (16-bit increment/decrement)
@@ -1360,8 +1364,8 @@ while true; do
 			[ $((A&15)) -gt 9 ] || [ $((FLAGS&16)) != 0 ] && A=$((A+6))
 			[ $A -gt 159 ] || [ $_carry != 0 ] && A=$((A+96)) && _carry=1
 			A=$((A&255))
-			get_flag $A
-			FLAGS=$(((_carry)|(P&0xfc)|((A^(A-1))>>4&16)))
+			get_pzs_flags $A
+			FLAGS=$(((_carry)|PZS|((A^(A-1))>>4&16)))
 			;;
 		47) # CMA
 			A=$((A^255))
@@ -1433,6 +1437,11 @@ while true; do
 			PC=$((PC+1))
 			;;
 
+		199) # RST 0
+			SP=$((SP-1&65535)); write_memory $SP $((PC>>8))
+			SP=$((SP-1&65535)); write_memory $SP $((PC&255))
+			PC=0
+			;;
 		207) # RST 1
 			SP=$((SP-1&65535)); write_memory $SP $((PC>>8))
 			SP=$((SP-1&65535)); write_memory $SP $((PC&255))
