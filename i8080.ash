@@ -1358,12 +1358,22 @@ while true; do
 			FLAGS=$(((FLAGS&0xfe)|(_temp&1)))
 			;;
 		39) # DAA
-			_carry=$((FLAGS&1))
-			[ $((A&15)) -gt 9 ] || [ $((FLAGS&16)) != 0 ] && A=$((A+6))
-			[ $A -gt 159 ] || [ $_carry != 0 ] && A=$((A+96)) && _carry=1
-			A=$((A&255))
+			if [ $((A&0xf)) -gt 9 ] || [ $((FLAGS&0x10)) != 0 ]; then
+				A=$((A+6))
+				aux_carry=16
+			else
+				aux_carry=0
+			fi
+			if [ $((A&0xf0)) -gt 144 ] || [ $((FLAGS&1)) != 0 ]; then
+				A=$((A+96))
+				carry=1
+			else
+				carry=0
+			fi
+			A=$((A&0xff))
 			get_pzs_flags $A
-			FLAGS=$(((_carry)|PZS|((A^(A-1))>>4&16)))
+			FLAGS=$((PZS|aux_carry|carry))
+			unset aux_carry carry
 			;;
 		47) # CMA
 			A=$((A^255))
