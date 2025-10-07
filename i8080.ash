@@ -25,13 +25,22 @@ set -e
 
 stdin_status_flags=
 
+get_stdin_status_flags() {
+	stdin_status_flags="`perl -e 'use strict; use POSIX; print STDOUT fcntl(STDIN, F_GETFL, 0);'`" || return
+	stdin_status_flags="${stdin_status_flags%% *}"
+	printf %s\\n "$stdin_status_flags" | grep -Eq '^[0-9]+$' || return
+}
+
 set_stdin_nonblock() {
 	[ -n "$I8080ASH_ASSUME_NONBLOCK_STDIN" ] && return
 	if [ -z "$stdin_status_flags" ]; then
-		stdin_status_flags="`perl -e 'use strict; use POSIX; print STDOUT fcntl(STDIN, F_GETFL, 0);'`" || return
-		stdin_status_flags="${stdin_status_flags%% *}"
-		printf %s\\n "$stdin_status_flags" | grep -Eq '^[0-9]+$' || return
+		if [ -n "$I8080ASH_USE_DD_IFLAG_NONBLOCK" ]; then
+			get_stdin_status_flags > /dev/null 2>&1 || true
+		else
+			get_stdin_status_flags || return
+		fi
 	fi
+	[ -n "$I8080ASH_USE_DD_IFLAG_NONBLOCK" ] && return
 	perl -e "use strict; use POSIX; fcntl(STDIN, F_SETFL, $stdin_status_flags | O_NONBLOCK);"
 }
 
