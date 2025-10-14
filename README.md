@@ -28,7 +28,7 @@ In addition to a supported shell, some other basic external commands are require
 * **hexdump(1)** or **xxd(1)**
 * **sed(1)**, if **xxd(1)** is being used
 * **grep(1)**
-* **perl(1)**
+* **perl(1)**, if none of `I8080ASH_USE_BASH_READ`, `I8080ASH_USE_DD_IFLAG_NONBLOCK` and `I8080ASH_ASSUME_NONBLOCK_STDIN` are enabled
 * **stty(1)**, if using from a terminal (the usual case)
 
 ## Supporting files
@@ -66,7 +66,7 @@ Currently only meaningful when used together with `I8080ASH_USE_BASH_READ`.
 
 #### I8080ASH_USE_DD_IFLAG_NONBLOCK
 
-Set this to a non-empty string to make the emulator passing `iflag=nonblock` for the **dd(1)** command line that used to read the input key, in attempt to make this read operation non-blocking.
+Set this to a non-empty string to make the emulator passing `iflag=nonblock` for the **dd(1)** command line that used to read the input key, in attempt to make this read operation non-blocking. This can make the emulator to work on a system without **perl(1)**.
 
 This **dd(1)** operand is a non-standard extension of GNU dd; its use is normally not recommended because it may leave your terminal in non-blocking state after exiting of the emulator.
 
